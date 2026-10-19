@@ -12,7 +12,7 @@ import { hashMcpSecret, type McpPrincipal, type PublicMcpOAuth } from "./oauth.j
 
 export { McpApiError, McpCapabilityError } from "./contracts.js";
 export type { ApiDispatch } from "./contracts.js";
-import { McpApiError, McpCapabilityError, type ApiDispatch, type Capability, company, task, requestId, boundedLimit, object, pick, rows, taskFields, commentFields, documentFields, pathId, stable } from "./contracts.js";
+import { McpApiError, McpCapabilityError, type ApiDispatch, type Capability, company, task, requestId, executionStages, boundedLimit, object, pick, rows, taskFields, commentFields, documentFields, pathId, stable } from "./contracts.js";
 import { fileTransferCapabilities, type PublicMcpTransfers } from "./file-transfers.js";
 import { expandedMcpCapabilities } from "./expanded-capabilities.js";
 
@@ -106,12 +106,13 @@ export const publicMcpCapabilities: Capability[] = [
   },
   {
     name: "paperclip_create_task", write: true,
-    description: "Delegate work by creating one durable task assigned to a Paperclip agent. This may schedule autonomous execution and consume the company's configured model budget. Normal permissions, approval gates and agent availability apply. Returns immediately; retrieve progress later. Never retry with a new requestId after an uncertain result.",
-    schema: z.object({ ...company, requestId, title: z.string().trim().min(1).max(200), description: z.string().max(50000), assigneeAgentId: z.uuid(), projectId: z.uuid().optional() }).strict(),
+    description: "Delegate work by creating one durable task assigned to a Paperclip agent, or leave out assigneeAgentId to file an unassigned backlog proposal for the board. An assigned task may schedule autonomous execution and consume the company's configured model budget. Normal permissions, approval gates and agent availability apply. Returns immediately; retrieve progress later. Never retry with a new requestId after an uncertain result.",
+    schema: z.object({ ...company, requestId, title: z.string().trim().min(1).max(200), description: z.string().max(50000), assigneeAgentId: z.uuid().optional(), status: z.enum(["backlog", "todo"]).optional(), projectId: z.uuid().optional(), labelIds: z.array(z.uuid()).max(100).optional(), executionStages: executionStages.optional() }).strict(),
     run: async (p, a, api, origin) => {
       const result = await api(p, "POST", `/companies/${a.companyId}/issues`, {
-        title: a.title, description: a.description, assigneeAgentId: a.assigneeAgentId,
-        ...(a.projectId ? { projectId: a.projectId } : {}), status: "todo",
+        title: a.title, description: a.description, ...(a.assigneeAgentId ? { assigneeAgentId: a.assigneeAgentId } : {}),
+        ...(a.projectId ? { projectId: a.projectId } : {}), status: a.status ?? (a.assigneeAgentId ? "todo" : "backlog"),
+        ...(a.labelIds ? { labelIds: a.labelIds } : {}), ...(a.executionStages ? { executionPolicy: { stages: a.executionStages } } : {}),
         idempotencyKey: `mcp:${hashMcpSecret(p.grant.companyId + ":" + p.grant.userId)}:${a.requestId}`,
       });
       return { task: pick(result, taskFields), url: origin + "/" + pathId(p.company.issuePrefix) + "/issues/" + pathId(object(result).identifier ?? object(result).id),

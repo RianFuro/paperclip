@@ -6,7 +6,7 @@ import {
   companySkillCreateSchema, companySkillUpdateSchema, companySkillFileUpdateSchema,
   createIssueWorkProductSchema, updateIssueWorkProductSchema,
 } from "@paperclipai/shared";
-import { McpApiError, company, task, requestId, pathId, object, pick, rows, taskFields, documentFields, type Capability } from "./contracts.js";
+import { McpApiError, company, task, requestId, executionStages, pathId, object, pick, rows, taskFields, documentFields, type Capability } from "./contracts.js";
 
 const agent = { ...company, agentId: z.uuid() };
 const project = { ...company, projectId: z.uuid() };
@@ -57,9 +57,31 @@ const nonempty = <T extends z.ZodObject>(schema: T) => schema.refine(v => Object
 export const expandedMcpCapabilities: Capability[] = [
   {
     name: "paperclip_update_task", write: true, destructive: true,
-    description: "Edit a task's title, description, priority, project, parent, dependencies, assignment or status as the connected person. Assignment/status changes may schedule agents and spend configured budget. Review decisions must be made in Paperclip. Reuse requestId on retries.",
-    schema: z.object({ ...task, requestId, changes: nonempty(taskChanges) }).strict(),
-    run: async (p, a, api) => ({ task: pick(await api(p, "PATCH", `/issues/${pathId(a.taskId)}`, a.changes), taskFields) }),
+    description: "Edit a task's title, description, priority, project, parent, dependencies, labels, review stages, assignment or status as the connected person. Assignment/status changes may schedule agents and spend configured budget. Review stages change in an update of their own, before the assignee finishes; review decisions must be made in Paperclip. Reuse requestId on retries.",
+    schema: z.object({ ...task, requestId, changes: nonempty(taskChanges.extend({
+      executionStages: executionStages.optional(),
+      addLabelIds: z.array(z.uuid()).max(100).optional(), removeLabelIds: z.array(z.uuid()).max(100).optional(),
+    }).strict().refine(v => v.executionStages === undefined || Object.keys(v).length === 1, "Change executionStages in an update of their own")) }).strict(),
+    run: async (p, a, api) => {
+      const path = `/issues/${pathId(a.taskId)}`;
+      const { executionStages: stages, addLabelIds, removeLabelIds, ...changes } = object(a.changes);
+      if (stages === undefined && addLabelIds === undefined && removeLabelIds === undefined) return { task: pick(await api(p, "PATCH", path, changes), taskFields) };
+      const current = object(await api(p, "GET", path));
+      if (stages !== undefined) {
+        // Replace only the stages and keep the rest of the policy; the snapshot rejects a concurrent policy edit.
+        const policy = current.executionPolicy ? object(current.executionPolicy) : null;
+        return { task: pick(await api(p, "PATCH", path, { executionPolicy: { ...policy, stages }, expectedExecutionPolicy: policy }), taskFields) };
+      }
+      // shortcut: read-then-replace; a concurrent label edit between the read and the write is lost.
+      const labelIds = new Set([...rows(current.labelIds), ...rows(addLabelIds)]);
+      for (const id of rows(removeLabelIds)) labelIds.delete(id);
+      return { task: pick(await api(p, "PATCH", path, { ...changes, labelIds: [...labelIds] }), taskFields) };
+    },
+  },
+  {
+    name: "paperclip_list_labels", description: "List the company's task labels. Use their ids with paperclip_create_task labelIds or paperclip_update_task addLabelIds and removeLabelIds.",
+    schema: z.object(company).strict(),
+    run: async (p, a, api) => ({ labels: rows(await api(p, "GET", `/companies/${pathId(a.companyId)}/labels`)).map(v => pick(v, ["id", "name", "color"])) }),
   },
   {
     name: "paperclip_finish_task", write: true, destructive: true,

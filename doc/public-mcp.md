@@ -244,7 +244,7 @@ OAuth credential bodies and redirect locations are redacted from HTTP logs.
 | `paperclip_list_projects` | Safe project summary |
 | `paperclip_search_tasks` | Bounded task search with offset pagination |
 | `paperclip_read_task` | Current task plus recent comments/history |
-| `paperclip_create_task` | Assigned task, submitted to existing scheduling |
+| `paperclip_create_task` | Assigned task, submitted to existing scheduling, or unassigned backlog proposal; optional labels and review stages |
 | `paperclip_add_comment` | Human feedback; may wake or queue work |
 | `paperclip_list_deliverables` | Documents, attachments and work-product references |
 | `paperclip_read_document` | Durable document body and current revision |
@@ -451,7 +451,7 @@ Existing direct requests and grants are unchanged.
 
 ## Expanded direct assistant tools
 
-Direct instance connections expose 37 explicitly registered operations. The central
+Direct instance connections expose 38 explicitly registered operations. The central
 public directory broker retains its original ten tools and rejects expanded calls.
 The existing experimental setting gates both surfaces; sharing a setup link still
 conveys no authority. Consent has one **Write all of your Paperclip data** checkbox,
@@ -462,9 +462,12 @@ write connections do not acquire this scope, including after refresh; reconnect
 with the expanded scopes to approve it.
 Normal Paperclip permissions are required in addition to the connection scope.
 
-- Work (`paperclip:write`): update, finish or block tasks; write Markdown documents;
-  register or update deliverables; upload attachments. Assignment and status changes
-  can schedule agents. Pending execution reviews must be decided in Paperclip.
+- Work (`paperclip:write`): update, finish or block tasks; add or remove labels;
+  set review and approval stages; write Markdown documents; register or update
+  deliverables; upload attachments. Assignment and status changes can schedule agents.
+  Stages are the only execution-policy field exposed; they change in a policy-only,
+  snapshot-guarded update and are rejected while a review is pending or an agent
+  owns execution. Pending execution reviews must be decided in Paperclip.
 - Configuration (`paperclip:configure`): edit existing agents, model/budget and
   existing connection bindings; edit instructions; create/update projects and choose
   accessible repositories; create/update organization skills and their files.

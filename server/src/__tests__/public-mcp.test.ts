@@ -12,7 +12,7 @@ import express, { type Request } from "express";
 import request from "supertest";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { activityLog, mcpEventAdmissions, mcpEventDeliveries, mcpEventSubscriptions, createDb, authUsers, companies, companyLogos, assets, companyMemberships, mcpOauthTokens, mcpOauthRequests, mcpOauthGrants, mcpOauthClients, mcpOauthDeviceRequests, mcpOauthMetadataAdmissions, mcpMutationReceipts, agents, issues, issueComments, instanceUserRoles } from "@paperclipai/db";
+import { activityLog, mcpEventAdmissions, mcpEventDeliveries, mcpEventSubscriptions, createDb, authUsers, companies, companyLogos, assets, companyMemberships, mcpOauthTokens, mcpOauthRequests, mcpOauthGrants, mcpOauthClients, mcpOauthDeviceRequests, mcpOauthMetadataAdmissions, mcpMutationReceipts, agents, issues, issueComments, instanceUserRoles, labels } from "@paperclipai/db";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { createPublicMcpOAuth, publicMcpConfig, hashMcpSecret, DEVICE_GRANT, McpOAuthError } from "../services/public-mcp/oauth.js";
 import { McpApiError, createMcpApiDispatch, createPublicMcpExecutor, publicMcpCapabilities } from "../services/public-mcp/capabilities.js";
@@ -727,6 +727,28 @@ describe.skipIf(!support.supported)("public MCP OAuth and tool boundary", () => 
       expect((await db.select().from(issues).where(eq(issues.id, f.issue.id)))[0]?.status).toBe("in_review");
       const logs = await db.select().from(activityLog).where(eq(activityLog.entityId, f.issue.id));
       expect(logs.some(v => v.actorType === "user" && v.actorId === f.actor.userId && v.action === "issue.updated")).toBe(true);
+    } finally { await f.cleanup(); }
+  });
+
+  it("sets review stages and labels, files backlog proposals and keeps stages fixed during review", async () => {
+    const f = await expandedFixture();
+    try {
+      const [reviewer] = await db.insert(agents).values({ companyId: f.company.id, name: "Reviewer" }).returning();
+      const [triage, finding] = await db.insert(labels).values([{ companyId: f.company.id, name: "triage", color: "#000000" }, { companyId: f.company.id, name: "finding", color: "#ffffff" }]).returning();
+      expect(await f.call("paperclip_list_labels")).toMatchObject({ labels: expect.arrayContaining([{ id: triage!.id, name: "triage", color: "#000000" }]) });
+      const stages = [{ type: "review", participants: [{ type: "agent", agentId: reviewer!.id }] }];
+      await expect(f.call("paperclip_update_task", { taskId: f.issue.id, requestId: randomUUID(), changes: { executionStages: stages, title: "Combined" } })).rejects.toThrow();
+      expect(await f.call("paperclip_update_task", { taskId: f.issue.id, requestId: randomUUID(), changes: { executionStages: stages } })).toMatchObject({ task: { executionPolicy: { stages: [{ type: "review", participants: [{ agentId: reviewer!.id }] }] } } });
+      expect(await f.call("paperclip_update_task", { taskId: f.issue.id, requestId: randomUUID(), changes: { addLabelIds: [triage!.id, finding!.id] } })).toHaveProperty("task.labelIds", expect.arrayContaining([triage!.id, finding!.id]));
+      expect(await f.call("paperclip_update_task", { taskId: f.issue.id, requestId: randomUUID(), changes: { removeLabelIds: [triage!.id], title: "Labelled" } })).toMatchObject({ task: { title: "Labelled", labelIds: [finding!.id] } });
+
+      await f.call("paperclip_update_task", { taskId: f.issue.id, requestId: randomUUID(), changes: { assigneeUserId: f.actor.userId, status: "in_progress" } });
+      expect(await f.call("paperclip_finish_task", { taskId: f.issue.id, requestId: randomUUID() })).toMatchObject({ task: { status: "in_review", assigneeAgentId: reviewer!.id } });
+      expect(await f.call("paperclip_update_task", { taskId: f.issue.id, requestId: randomUUID(), changes: { executionStages: [] } })).toMatchObject({ outcome: "rejected", status: 403, code: "MCP_REVIEW_REQUIRED" });
+      expect((await db.select().from(issues).where(eq(issues.id, f.issue.id)))[0]?.executionPolicy).toMatchObject({ stages: [{ type: "review" }] });
+
+      const proposal = await f.call("paperclip_create_task", { requestId: randomUUID(), title: "Proposal", description: "Found while testing", labelIds: [finding!.id], executionStages: stages });
+      expect(proposal).toMatchObject({ task: { status: "backlog", assigneeAgentId: null, labelIds: [finding!.id], executionPolicy: { stages: [{ type: "review" }] } } });
     } finally { await f.cleanup(); }
   });
 

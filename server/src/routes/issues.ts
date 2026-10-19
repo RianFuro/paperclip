@@ -13602,7 +13602,7 @@ export function issueRoutes(
         && !(await resolveManagedIssueForPrivacy(req, res, existing))) return;
       // MCP task changes cannot stop a run or implicitly decide a pending review.
       const mcpParticipationChange = req.actor.source === "mcp_oauth" &&
-        ["status", "assigneeAgentId", "assigneeUserId", "blockedByIssueIds", "parentId", "projectId"].some(key => req.body[key] !== undefined);
+        ["status", "assigneeAgentId", "assigneeUserId", "blockedByIssueIds", "parentId", "projectId", "executionPolicy"].some(key => req.body[key] !== undefined);
       if (mcpParticipationChange) await assertMcpTaskParticipation(db, existing);
 
       assertNoAgentHostWorkspaceCommandMutation(
